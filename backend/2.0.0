@@ -1,0 +1,12 @@
+Collecting email-validator
+  Obtaining dependency information for email-validator from https://files.pythonhosted.org/packages/de/15/545e2b6cf2e3be84bc1ed85613edd75b8aea69807a71c26f4ca6a9258e82/email_validator-2.3.0-py3-none-any.whl.metadata
+  Downloading email_validator-2.3.0-py3-none-any.whl.metadata (26 kB)
+Collecting dnspython>=2.0.0 (from email-validator)
+  Obtaining dependency information for dnspython>=2.0.0 from https://files.pythonhosted.org/packages/ba/5a/18ad964b0086c6e62e2e7500f7edc89e3faa45033c71c1893d34eed2b2de/dnspython-2.8.0-py3-none-any.whl.metadata
+  Downloading dnspython-2.8.0-py3-none-any.whl.metadata (5.7 kB)
+Requirement already satisfied: idna>=2.0.0 in .\venv\lib\site-packages (from email-validator) (3.11)
+Downloading email_validator-2.3.0-py3-none-any.whl (35 kB)
+Downloading dnspython-2.8.0-py3-none-any.whl (331 kB)
+   ---------------------------------------- 331.1/331.1 kB 4.1 MB/s eta 0:00:00
+Installing collected packages: dnspython, email-validator
+Successfully installed dnspython-2.8.0 email-validator-2.3.0

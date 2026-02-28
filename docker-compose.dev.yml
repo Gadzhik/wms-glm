@@ -1,0 +1,137 @@
+version: '3.9'
+
+services:
+  # ==============================
+  # FastAPI Backend (Development)
+  # ==============================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vms-backend-dev
+    restart: unless-stopped
+    environment:
+      # Database (SQLite for dev)
+      DATABASE_URL: sqlite+aiosqlite:///./data/vms.db
+      # Backend settings
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: 8000
+      BACKEND_LOG_LEVEL: DEBUG
+      BACKEND_CORS_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:8080
+      # Security
+      SECRET_KEY: dev-secret-key-change-in-production
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      # Storage
+      STORAGE_PATH: /app/data
+      STORAGE_MAX_SIZE_GB: 100
+      STORAGE_RETENTION_DAYS: 30
+      # Recording
+      RECORDING_FORMAT: mp4
+      RECORDING_CODEC: h264
+      RECORDING_BITRATE: 2048
+      RECORDING_FPS: 25
+      RECORDING_RESOLUTION: 1920x1080
+      # AI Detection
+      AI_MODEL_PATH: /app/models
+      AI_CONFIDENCE_THRESHOLD: 0.7
+      AI_DETECT_PERSON: true
+      AI_DETECT_VEHICLE: true
+      AI_DETECT_FACE: false
+      # ONVIF
+      ONVIF_DISCOVERY_TIMEOUT: 5
+      ONVIF_CONNECTION_TIMEOUT: 10
+      # WebSocket
+      WS_HEARTBEAT_INTERVAL: 30
+      WS_MAX_CONNECTIONS: 100
+      # Logging
+      LOG_LEVEL: DEBUG
+      LOG_FORMAT: "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
+      # LLM (Optional)
+      LLM_ENABLED: false
+      LLM_PROVIDER: lmstudio
+      LLM_BASE_URL: http://host.docker.internal:1234/v1
+      LLM_MODEL: local-model
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/logs:/app/logs
+      - ./backend/app:/app/app:ro
+    ports:
+      - "8000:8000"
+    networks:
+      - vms_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ==============================
+  # React Frontend (Development)
+  # ==============================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:8000/api/v1
+    container_name: vms-frontend-dev
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - vms_network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================
+  # RTSP Test Server (Optional)
+  # ==============================
+  rtsp-server:
+    image: aler9/rtsp-simple-server:latest
+    container_name: vms-rtsp-server
+    restart: unless-stopped
+    command:
+      - "--ffmpeg"
+      - "--source"
+      - "https://test-videos.co.uk/vids/jellyfish/mp4/h264/360/Jellyfish_360_10s_1MB.mp4"
+    ports:
+      - "8554:8554"
+    networks:
+      - vms_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    profiles:
+      - rtsp
+
+# ==============================
+# Networks
+# ==============================
+networks:
+  vms_network:
+    name: vms_network
+    driver: bridge

@@ -1,0 +1,331 @@
+version: '3.9'
+
+services:
+  # ==============================
+  # PostgreSQL Database
+  # ==============================
+  postgres:
+    image: postgres:15-alpine
+    container_name: vms-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vms}
+      POSTGRES_USER: ${POSTGRES_USER:-vms_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vms_secure_password}
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - vms_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vms_user} -d ${POSTGRES_DB:-vms}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================
+  # Redis Cache & Queue
+  # ==============================
+  redis:
+    image: redis:7-alpine
+    container_name: vms-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - vms_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================
+  # FastAPI Backend
+  # ==============================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vms-backend
+    restart: unless-stopped
+    environment:
+      # Database
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vms_user}:${POSTGRES_PASSWORD:-vms_secure_password}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-vms}
+      # Redis
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}
+      # Backend settings
+      BACKEND_HOST: ${BACKEND_HOST:-0.0.0.0}
+      BACKEND_PORT: ${BACKEND_PORT:-8000}
+      BACKEND_WORKERS: ${BACKEND_WORKERS:-4}
+      BACKEND_LOG_LEVEL: ${BACKEND_LOG_LEVEL:-info}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000}
+      # Security
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-me}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      # Storage
+      STORAGE_PATH: ${STORAGE_PATH:-/app/storage}
+      STORAGE_MAX_SIZE_GB: ${STORAGE_MAX_SIZE_GB:-1000}
+      STORAGE_RETENTION_DAYS: ${STORAGE_RETENTION_DAYS:-30}
+      # Recording
+      RECORDING_FORMAT: ${RECORDING_FORMAT:-mp4}
+      RECORDING_CODEC: ${RECORDING_CODEC:-h264}
+      RECORDING_BITRATE: ${RECORDING_BITRATE:-2048}
+      RECORDING_FPS: ${RECORDING_FPS:-25}
+      RECORDING_RESOLUTION: ${RECORDING_RESOLUTION:-1920x1080}
+      # AI Detection
+      AI_MODEL_PATH: ${AI_MODEL_PATH:-/app/models}
+      AI_CONFIDENCE_THRESHOLD: ${AI_CONFIDENCE_THRESHOLD:-0.7}
+      AI_DETECT_PERSON: ${AI_DETECT_PERSON:-true}
+      AI_DETECT_VEHICLE: ${AI_DETECT_VEHICLE:-true}
+      AI_DETECT_FACE: ${AI_DETECT_FACE:-false}
+      # ONVIF
+      ONVIF_DISCOVERY_TIMEOUT: ${ONVIF_DISCOVERY_TIMEOUT:-5}
+      ONVIF_CONNECTION_TIMEOUT: ${ONVIF_CONNECTION_TIMEOUT:-10}
+      # WebSocket
+      WS_HEARTBEAT_INTERVAL: ${WS_HEARTBEAT_INTERVAL:-30}
+      WS_MAX_CONNECTIONS: ${WS_MAX_CONNECTIONS:-100}
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    volumes:
+      - storage_data:/app/storage
+      - models_data:/app/models
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - vms_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ==============================
+  # React Frontend (Nginx)
+  # ==============================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api}
+    container_name: vms-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api}
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - vms_network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================
+  # Telegram Bot (Optional - requires TELEGRAM_BOT_TOKEN)
+  # ==============================
+  telegram-bot:
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    container_name: vms-telegram-bot
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      BACKEND_URL: http://backend:8000
+      WEBHOOK_URL: ${TELEGRAM_WEBHOOK_URL:-}
+      WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - vms_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    profiles:
+      - telegram
+
+  # ==============================
+  # Prometheus Monitoring (Optional)
+  # ==============================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: vms-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - vms_network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    profiles:
+      - monitoring
+
+  # ==============================
+  # Grafana Dashboards (Optional)
+  # ==============================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: vms-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-grafana_admin_password}
+      GF_SECURITY_SECRET_KEY: ${GRAFANA_SECRET_KEY:-grafana_secret_key}
+      GF_INSTALL_PLUGINS: ""
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-3001}
+      GF_SERVER_HTTP_PORT: 3000
+      GF_LOG_LEVEL: info
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - vms_network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    profiles:
+      - monitoring
+
+  # ==============================
+  # Nginx Reverse Proxy (Optional)
+  # ==============================
+  nginx:
+    image: nginx:alpine
+    container_name: vms-nginx
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    networks:
+      - vms_network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    profiles:
+      - production
+
+# ==============================
+# Networks
+# ==============================
+networks:
+  vms_network:
+    name: vms_network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ==============================
+# Volumes
+# ==============================
+volumes:
+  postgres_data:
+    name: vms_postgres_data
+  redis_data:
+    name: vms_redis_data
+  storage_data:
+    name: vms_storage_data
+  models_data:
+    name: vms_models_data
+  prometheus_data:
+    name: vms_prometheus_data
+  grafana_data:
+    name: vms_grafana_data
+  nginx_logs:
+    name: vms_nginx_logs

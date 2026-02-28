@@ -1,0 +1,10 @@
+# SSL сертификаты будут размещены здесь
+# Не коммитить реальные сертификаты в репозиторий
+# 
+# Для получения SSL сертификатов используйте Let's Encrypt:
+# certbot certonly --standalone -d your-domain.com
+#
+# Скопируйте сертификаты в эту директорию:
+# - fullchain.pem -> /etc/nginx/ssl/fullchain.pem
+# - privkey.pem -> /etc/nginx/ssl/privkey.pem
+# - chain.pem -> /etc/nginx/ssl/chain.pem
