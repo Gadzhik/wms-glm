@@ -1,0 +1,325 @@
+version: '3.9'
+
+# Docker Compose для Production
+# Использование: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  # ==============================
+  # PostgreSQL (Production)
+  # ==============================
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - vms_network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ==============================
+  # Redis (Production)
+  # ==============================
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD} --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - vms_network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ==============================
+  # Backend (Production)
+  # ==============================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    restart: always
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: 8000
+      BACKEND_WORKERS: ${BACKEND_WORKERS:-4}
+      BACKEND_LOG_LEVEL: ${BACKEND_LOG_LEVEL:-info}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS}
+      SECRET_KEY: ${SECRET_KEY}
+      ALGORITHM: ${ALGORITHM}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS}
+      STORAGE_PATH: /app/storage
+      STORAGE_MAX_SIZE_GB: ${STORAGE_MAX_SIZE_GB}
+      STORAGE_RETENTION_DAYS: ${STORAGE_RETENTION_DAYS}
+      RECORDING_FORMAT: ${RECORDING_FORMAT}
+      RECORDING_CODEC: ${RECORDING_CODEC}
+      RECORDING_BITRATE: ${RECORDING_BITRATE}
+      RECORDING_FPS: ${RECORDING_FPS}
+      RECORDING_RESOLUTION: ${RECORDING_RESOLUTION}
+      AI_MODEL_PATH: /app/models
+      AI_CONFIDENCE_THRESHOLD: ${AI_CONFIDENCE_THRESHOLD}
+      AI_DETECT_PERSON: ${AI_DETECT_PERSON}
+      AI_DETECT_VEHICLE: ${AI_DETECT_VEHICLE}
+      AI_DETECT_FACE: ${AI_DETECT_FACE}
+      ONVIF_DISCOVERY_TIMEOUT: ${ONVIF_DISCOVERY_TIMEOUT}
+      ONVIF_CONNECTION_TIMEOUT: ${ONVIF_CONNECTION_TIMEOUT}
+      WS_HEARTBEAT_INTERVAL: ${WS_HEARTBEAT_INTERVAL}
+      WS_MAX_CONNECTIONS: ${WS_MAX_CONNECTIONS}
+      LOG_LEVEL: ${LOG_LEVEL}
+      LOG_FORMAT: ${LOG_FORMAT}
+    volumes:
+      - storage_data:/app/storage
+      - models_data:/app/models
+    networks:
+      - vms_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 1G
+      replicas: 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ==============================
+  # Frontend (Production)
+  # ==============================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+      args:
+        VITE_API_BASE_URL: /api
+    restart: always
+    environment:
+      VITE_API_BASE_URL: /api
+    networks:
+      - vms_network
+    depends_on:
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ==============================
+  # Telegram Bot (Production)
+  # ==============================
+  telegram-bot:
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+      target: production
+    restart: always
+    environment:
+      BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      CHAT_ID: ${TELEGRAM_CHAT_ID}
+      BACKEND_URL: http://backend:8000
+      WEBHOOK_URL: ${TELEGRAM_WEBHOOK_URL}
+      WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
+    networks:
+      - vms_network
+    depends_on:
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+  # ==============================
+  # Prometheus (Production)
+  # ==============================
+  prometheus:
+    image: prom/prometheus:latest
+    restart: always
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION}'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - vms_network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ==============================
+  # Grafana (Production)
+  # ==============================
+  grafana:
+    image: grafana/grafana:latest
+    restart: always
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SECURITY_SECRET_KEY: ${GRAFANA_SECRET_KEY}
+      GF_INSTALL_PLUGINS: ""
+      GF_SERVER_ROOT_URL: ${GRAFANA_URL:-https://grafana.${NGINX_SERVER_NAME}}
+      GF_SERVER_HTTP_PORT: 3000
+      GF_LOG_LEVEL: info
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - vms_network
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ==============================
+  # Nginx (Production)
+  # ==============================
+  nginx:
+    image: nginx:alpine
+    restart: always
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - vms_network
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# ==============================
+# Networks
+# ==============================
+networks:
+  vms_network:
+    name: vms_network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ==============================
+# Volumes
+# ==============================
+volumes:
+  postgres_data:
+    name: vms_postgres_data
+  redis_data:
+    name: vms_redis_data
+  storage_data:
+    name: vms_storage_data
+  models_data:
+    name: vms_models_data
+  prometheus_data:
+    name: vms_prometheus_data
+  grafana_data:
+    name: vms_grafana_data
+  nginx_logs:
+    name: vms_nginx_logs
